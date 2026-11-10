@@ -5,6 +5,30 @@
 
 [![CI](https://github.com/amer8/pulsebar/actions/workflows/quality.yml/badge.svg?branch=main)](https://github.com/amer8/pulsebar/actions/workflows/quality.yml)
 
+## sparkDash fleet mode (this fork)
+
+This fork reads [sparkDash](https://github.com/MiaAI-Lab/sparkDash) instead of the per-unit DGX Dashboard, with a panel modelled on
+[omarchy-sparkdash](https://github.com/patcastle/omarchy-sparkdash):
+
+- Menu bar: hosts online, total generation tok/s (GPU usage when idle) and the hottest GPU temperature. The icon changes when a
+  host is unreachable, throttled, low on storage or its LLM is down.
+- Panel: fleet tok/s and prefill, power, VRAM, unified memory, 24 h energy with an hourly chart, exceptions, and one card per
+  host with a 30-minute tok/s sparkline. Click a card for memory, storage, SM clock, CPU, network, top process and LLM engine
+  detail (KV cache, slots, requests, TTFT/ITL p95, prefix-cache hit rate, MTP acceptance).
+- It polls `/api/sparks`, `/api/sparks/:id/metrics` and `/api/fleet-energy` every 3 s.
+
+<p align="center"><img src="docs/assets/sparkdash-panel.png" alt="sparkDash fleet panel with demo data" width="400"></p>
+
+Connection (gear button in the panel, or `defaults write dev.pulsebar.PulseBar.sparkdash <key> <value>`):
+
+- `SparkDash.URL`: sparkDash base URL, default `http://127.0.0.1:5555`.
+- `SparkDash.SSHHost`: optional SSH host (e.g. `spark-head`). When set, PulseBar keeps its own
+  `ssh -N -L <free port>:127.0.0.1:<URL port>` tunnel to that host (key auth, `BatchMode`) and reads sparkDash through it,
+  so a dashboard bound to loopback on the Spark needs no exposure. Only that ssh process is stopped on quit.
+
+Build and install: `make install` (to `~/Applications/PulseBar.app`, bundle id `dev.pulsebar.PulseBar.sparkdash`).
+Render the panel to a PNG without the menu bar: `PulseBar --render-panel out.png [--demo] [--expand]`.
+
 `PulseBar` is an unofficial macOS menu bar monitor for telemetry exposed by the DGX Dashboard web app on NVIDIA DGX Spark and compatible NVIDIA GB10-based OEM systems. It signs in to the local dashboard, listens to the server-sent event stream, and shows a compact `RAM` and `GPU` status item in the menu bar.
 
 ## Requirements

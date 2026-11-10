@@ -7,7 +7,7 @@ APP_NAME := PulseBar
 APP_DISPLAY_NAME := PulseBar
 APP_VERSION ?= $(MARKETING_VERSION)
 RELEASE_DATE ?= $(shell awk -v version="$(APP_VERSION)" '$$1 == "\#\#" && $$2 == version && $$3 == "-" { print $$4; exit }' CHANGELOG.md)
-BUNDLE_IDENTIFIER ?= dev.pulsebar.PulseBar
+BUNDLE_IDENTIFIER ?= dev.pulsebar.PulseBar.sparkdash
 BUILD_CONFIGURATION := release
 RELEASE_ARCH_ARGS ?=
 BUILD_DIR := .build/$(BUILD_CONFIGURATION)

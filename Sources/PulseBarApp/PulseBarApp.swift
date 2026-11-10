@@ -4,83 +4,63 @@ import SwiftUI
 
 @MainActor
 struct PulseBarApp: App {
-    private let viewModel = MetricsViewModel(demo: CommandLine.arguments.contains("--demo"))
-
-    init() {
-        if !UserDefaults.standard.bool(forKey: "PulseBar.HasSeenWelcome") {
-            let model = viewModel
-            DispatchQueue.main.async { PulseBarNavigation.openPreferences(viewModel: model) }
-        }
-    }
+    @StateObject private var fleet = FleetViewModel(demo: CommandLine.arguments.contains("--demo"))
 
     var body: some Scene {
         MenuBarExtra {
-            MetricsDetailView(viewModel: viewModel)
+            FleetPanelView(model: fleet)
         } label: {
-            MenuBarStatusItemLabel(viewModel: viewModel)
+            FleetStatusItemLabel(model: fleet)
         }
         .menuBarExtraStyle(.window)
         .commands {
-            PulseBarCommands(viewModel: viewModel)
+            FleetCommands(model: fleet)
         }
     }
 }
 
 @MainActor
-private struct MenuBarStatusItemLabel: View {
-    @ObservedObject var viewModel: MetricsViewModel
-    @AppStorage(MenuBarDisplay.preferenceKey) private var display = MenuBarDisplay.both.rawValue
+private struct FleetStatusItemLabel: View {
+    @ObservedObject var model: FleetViewModel
 
     var body: some View {
-        if let menuBarImage = menuBarLabelImage {
-            Image(nsImage: menuBarImage)
-                .accessibilityLabel(viewModel.snapshot.menuBarTitle)
+        if let image = renderedImage {
+            Image(nsImage: image).accessibilityLabel(model.menuBarTitle)
         } else {
-            Text(viewModel.snapshot.menuBarTitle)
-                .monospacedDigit()
-                .accessibilityLabel(viewModel.snapshot.menuBarTitle)
+            Text(model.menuBarTitle).monospacedDigit()
         }
     }
 
-    private var menuBarLabelImage: NSImage? {
+    private var renderedImage: NSImage? {
         let renderer = ImageRenderer(
-            content: MenuBarLabelView(snapshot: viewModel.snapshot).id(display)
+            content: HStack(spacing: 4) {
+                Image(systemName: model.alerting ? "bolt.trianglebadge.exclamationmark.fill" : "bolt.fill")
+                Text(model.menuBarTitle.replacingOccurrences(of: "⚡ ", with: ""))
+            }
+            .font(.system(size: NSFont.menuBarFont(ofSize: 0).pointSize))
+            .monospacedDigit()
+            .foregroundStyle(.black)
+            .fixedSize()
         )
         renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
-
-        guard let image = renderer.nsImage else {
-            return nil
-        }
-
+        guard let image = renderer.nsImage else { return nil }
         image.isTemplate = true
         return image
     }
 }
 
-private struct MenuBarLabelView: View {
-    let snapshot: MetricsSnapshot
-    @AppStorage(MenuBarDisplay.preferenceKey) private var display = MenuBarDisplay.both.rawValue
+@MainActor
+struct FleetCommands: Commands {
+    let model: FleetViewModel
 
-    var body: some View {
-        HStack(spacing: 6) {
-            if display == MenuBarDisplay.icon.rawValue {
-                Image(systemName: "waveform.path.ecg")
-            } else {
-                if display != MenuBarDisplay.gpu.rawValue {
-                    Image(systemName: "memorychip")
-                    Text(snapshot.memory.percentText)
-                }
-                if display != MenuBarDisplay.memory.rawValue {
-                    Image(systemName: "cpu.fill")
-                    Text(snapshot.gpu.menuBarText)
-                }
-            }
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") { SparkleController.shared.checkForUpdates() }
+                .disabled(!SparkleController.shared.canCheckForUpdates)
         }
-        .font(.system(size: NSFont.menuBarFont(ofSize: 0).pointSize))
-        .monospacedDigit()
-        .symbolRenderingMode(.monochrome)
-        .foregroundStyle(.black)
-        .fixedSize()
+        CommandGroup(replacing: .appTermination) {
+            Button("Quit") { model.quit() }.keyboardShortcut("q", modifiers: .command)
+        }
     }
 }
 
