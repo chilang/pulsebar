@@ -122,7 +122,7 @@ struct FleetPanelView: View {
 
     private var header: some View {
         HStack {
-            Text("DGX SPARKS").font(mono(15, .bold)).tracking(1.2).foregroundStyle(Palette.foreground)
+            Text(model.title).font(mono(15, .bold)).tracking(1.2).foregroundStyle(Palette.foreground)
             Spacer()
             Text(model.reachable ? "\(model.snapshot.onlineCount)/\(model.snapshot.totalCount) ONLINE" : "OFFLINE")
                 .font(mono(12, .bold))
@@ -198,16 +198,40 @@ struct FleetPanelView: View {
 
     private var settings: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("CONNECTION").font(mono(11, .bold)).tracking(1).foregroundStyle(Palette.dim)
-            Picker("Source", selection: $model.source) {
-                Text("sparkDash").tag("sparkdash")
-                Text("llama-swap").tag("llamaswap")
+            HStack {
+                Text("SOURCES").font(mono(11, .bold)).tracking(1).foregroundStyle(Palette.dim)
+                Spacer()
+                Button {
+                    model.addSource()
+                } label: {
+                    Label("Add", systemImage: "plus")
+                }
+                .buttonStyle(.plain).font(mono(10, .bold)).foregroundStyle(Palette.dim)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            LabeledField(label: "URL", text: $model.urlString, prompt: FleetSettings.defaultURL)
-            LabeledField(label: "SSH host", text: $model.sshHost, prompt: "optional, e.g. spark-head")
-            LabeledField(label: "Token", text: $model.token, prompt: "optional API key (Bearer)")
+            ForEach($model.sources) { $source in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Picker("Source", selection: $source.kind) {
+                            Text("sparkDash").tag("sparkdash")
+                            Text("llama-swap").tag("llamaswap")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        if model.sources.count > 1 {
+                            Button {
+                                model.removeSource(id: source.id)
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.plain).foregroundStyle(Palette.dim).help("Remove source")
+                        }
+                    }
+                    LabeledField(label: "URL", text: $source.url, prompt: FleetSettings.defaultURL)
+                    LabeledField(label: "SSH host", text: $source.sshHost, prompt: "optional, e.g. spark-head")
+                    LabeledField(label: "Token", text: $source.token, prompt: "optional API key (Bearer)")
+                }
+                .padding(.bottom, 4)
+            }
             Text(
                 "sparkDash mode reads the sparkDash REST API; llama-swap mode reads a llama-swap server's "
                     + "`/api/performance`, `/api/metrics/*` and `/metrics` endpoints. With an SSH host, PulseBar runs "
