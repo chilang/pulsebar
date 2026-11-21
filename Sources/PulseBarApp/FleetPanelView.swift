@@ -198,12 +198,20 @@ struct FleetPanelView: View {
 
     private var settings: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("SPARKDASH").font(mono(11, .bold)).tracking(1).foregroundStyle(Palette.dim)
+            Text("CONNECTION").font(mono(11, .bold)).tracking(1).foregroundStyle(Palette.dim)
+            Picker("Source", selection: $model.source) {
+                Text("sparkDash").tag("sparkdash")
+                Text("llama-swap").tag("llamaswap")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
             LabeledField(label: "URL", text: $model.urlString, prompt: FleetSettings.defaultURL)
             LabeledField(label: "SSH host", text: $model.sshHost, prompt: "optional, e.g. spark-head")
+            LabeledField(label: "Token", text: $model.token, prompt: "optional API key (Bearer)")
             Text(
-                "With an SSH host, PulseBar runs `ssh -N -L <free port>:127.0.0.1:<URL port>` to that host "
-                    + "and reads sparkDash through it, for a dashboard bound to loopback on the Spark."
+                "sparkDash mode reads the sparkDash REST API; llama-swap mode reads a llama-swap server's "
+                    + "`/api/performance`, `/api/metrics/*` and `/metrics` endpoints. With an SSH host, PulseBar runs "
+                    + "`ssh -N -L <free port>:127.0.0.1:<URL port>` to that host and reads through it."
             )
             .font(.system(size: 10)).foregroundStyle(Palette.faint)
         }
@@ -214,12 +222,12 @@ struct FleetPanelView: View {
 
     private var footer: some View {
         HStack(spacing: 14) {
-            Button("Open sparkDash") { model.openDashboard() }
+            Button("Open dashboard") { model.openDashboard() }
             Button {
                 showSettings.toggle()
             } label: {
                 Image(systemName: "gearshape")
-            }.help("sparkDash connection")
+            }.help("Connection")
             Spacer()
             if let last = model.lastUpdate, model.reachable {
                 Text(last, style: .relative).font(mono(10)).foregroundStyle(Palette.faint)

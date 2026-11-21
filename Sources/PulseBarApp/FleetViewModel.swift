@@ -4,7 +4,10 @@ import Foundation
 enum FleetSettings {
     static let urlKey = "SparkDash.URL"
     static let sshHostKey = "SparkDash.SSHHost"
+    static let sourceKey = "SparkDash.Source"
+    static let tokenKey = "SparkDash.Token"
     static let defaultURL = "http://127.0.0.1:5555"
+    static let defaultSource = "sparkdash"
 }
 
 /// Keeps `ssh -N -L <local>:127.0.0.1:<remote> <host>` running for a sparkDash bound to loopback on the head.
@@ -84,6 +87,8 @@ final class FleetViewModel: ObservableObject {
     @Published private(set) var history: [String: [Double]] = [:]
     @Published var urlString: String { didSet { settingsChanged(old: oldValue, new: urlString, key: FleetSettings.urlKey) } }
     @Published var sshHost: String { didSet { settingsChanged(old: oldValue, new: sshHost, key: FleetSettings.sshHostKey) } }
+    @Published var source: String { didSet { settingsChanged(old: oldValue, new: source, key: FleetSettings.sourceKey) } }
+    @Published var token: String { didSet { settingsChanged(old: oldValue, new: token, key: FleetSettings.tokenKey) } }
 
     static let historyLimit = 600  // 30 minutes at 3 s
     private let tunnel = SparkDashTunnel()
@@ -96,6 +101,8 @@ final class FleetViewModel: ObservableObject {
         self.demo = demo
         urlString = defaults.string(forKey: FleetSettings.urlKey) ?? FleetSettings.defaultURL
         sshHost = defaults.string(forKey: FleetSettings.sshHostKey) ?? ""
+        source = defaults.string(forKey: FleetSettings.sourceKey) ?? FleetSettings.defaultSource
+        token = defaults.string(forKey: FleetSettings.tokenKey) ?? ""
         start()
         terminateObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
@@ -129,7 +136,9 @@ final class FleetViewModel: ObservableObject {
     var menuBarTitle: String {
         guard reachable, snapshot.totalCount > 0 else { return "⚡ —" }
         let rate = snapshot.generationTps > 0 ? "\(Int(snapshot.generationTps.rounded())) t/s" : "\(Int(snapshot.busiest.rounded()))%"
-        return "\(snapshot.onlineCount)/\(snapshot.totalCount)  \(rate)  \(Int(snapshot.hottest.rounded()))°"
+        // Apple Silicon hosts report no GPU temperature; omit the segment instead of showing 0°.
+        let temp = snapshot.hottest > 0 ? "  \(Int(snapshot.hottest.rounded()))°" : ""
+        return "\(snapshot.onlineCount)/\(snapshot.totalCount)  \(rate)\(temp)"
     }
 
     var alerting: Bool { !reachable || !snapshot.alerts.isEmpty }
@@ -163,6 +172,7 @@ final class FleetViewModel: ObservableObject {
     }
 
     private var trimmedHost: String { sshHost.trimmingCharacters(in: .whitespaces) }
+    private var isLlamaSwap: Bool { source.trimmingCharacters(in: .whitespaces) == "llamaswap" }
 
     private func settingsChanged(old: String, new: String, key: String) {
         guard old != new else { return }
@@ -200,12 +210,22 @@ final class FleetViewModel: ObservableObject {
             return
         }
         do {
-            let next = try await SparkDashClient(baseURL: url).fetchFleet()
+            let credential = token.trimmingCharacters(in: .whitespaces)
+            let next: FleetSnapshot
+            if isLlamaSwap {
+                next = try await LlamaSwapClient(baseURL: url, token: credential.isEmpty ? nil : credential).fetchFleet()
+            } else {
+                next = try await SparkDashClient(baseURL: url, token: credential.isEmpty ? nil : credential).fetchFleet()
+            }
             apply(next, at: .now)
         } catch {
             reachable = false
             if let tunnelError = tunnel.lastError, !trimmedHost.isEmpty, !tunnel.isRunning {
                 errorText = "SSH tunnel: \(tunnelError)"
+            } else if isLlamaSwap {
+                errorText =
+                    (error as? SparkDashError)?.message.replacingOccurrences(of: "sparkDash", with: "llama-swap")
+                    ?? "llama-swap unavailable"
             } else {
                 errorText = (error as? SparkDashError)?.message ?? "sparkDash unavailable"
             }
