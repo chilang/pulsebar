@@ -112,4 +112,54 @@ final class LlamaSwapTests: XCTestCase {
         model.apply(FleetSnapshot(sparks: [spark]), at: .now)
         XCTAssertEqual(model.menuBarTitle, "1/1  62 t/s")
     }
+
+    /// Trimmed `macmon serve` /json sample from an M5 Ultra under load.
+    private let macmon = Data(
+        """
+        {"all_power":231.6,"cpu_power":5.5,"gpu_power":138.3,"sys_power":231.6,"gpu_freq_mhz":1620,
+         "gpu_usage":[1620,1.0],"gpu_mem_in_use":190661296128,"uptime":881847,
+         "temp":{"cpu_temp_avg":62.6,"gpu_temp_avg":71.8},
+         "memory":{"ram_total":274877906944,"ram_usage":212433158144}}
+        """.utf8)
+
+    func testMacmonFillsSensorsLlamaSwapReportsAsZero() throws {
+        var summary = try LlamaSwapDecoding.summary(
+            performance: performance, stats: stats, activity: activity,
+            prometheus: Data(prometheus.utf8), host: "sirius.example.ts.net")
+        XCTAssertEqual(summary.temperature, 0)
+        LlamaSwapDecoding.applyMacmon(macmon, to: &summary)
+        XCTAssertEqual(summary.temperature, 71.8)
+        XCTAssertEqual(summary.cpuTemp, 62.6)
+        XCTAssertEqual(summary.power, 138.3)
+        XCTAssertEqual(summary.systemPower, 231.6)
+        XCTAssertEqual(summary.cpuPower, 5.5)
+        XCTAssertEqual(summary.usage, 100)
+        XCTAssertEqual(summary.uptime, 881_847)
+        XCTAssertEqual(summary.vramUsedMB, 181_828, accuracy: 1)
+        XCTAssertEqual(summary.memTotalMB, 262_144)
+        XCTAssertEqual(summary.oomRisk, "medium")
+        XCTAssertEqual(FleetSnapshot(sparks: [summary]).hottest, 71.8)
+    }
+
+    func testMacmonGarbageLeavesSummaryUnchanged() throws {
+        let before = try LlamaSwapDecoding.summary(
+            performance: performance, stats: stats, activity: activity,
+            prometheus: Data(prometheus.utf8), host: "sirius.example.ts.net")
+        var after = before
+        LlamaSwapDecoding.applyMacmon(Data("not json".utf8), to: &after)
+        XCTAssertEqual(after, before)
+    }
+
+    func testWattsFormattingAndFleetTotal() {
+        XCTAssertEqual(FleetFormat.watts(7.7, limit: 120), "7.7 / 120 W")
+        XCTAssertEqual(FleetFormat.watts(138.3, limit: 0), "138.3 W")
+        var spark = SparkSummary()
+        spark.kind = "spark"
+        spark.systemPower = 30
+        var host = SparkSummary()
+        host.kind = "host"
+        host.systemPower = 200
+        XCTAssertEqual(FleetSnapshot(sparks: [spark, host], energy: FleetEnergy(currentWatts: 73)).watts, 273)
+        XCTAssertEqual(FleetSnapshot(sparks: [spark, host]).watts, 230)
+    }
 }

@@ -105,7 +105,12 @@ struct FleetSnapshot: Sendable, Equatable {
     var vramTotalMB: Double { sparks.reduce(0) { $0 + $1.vramTotalMB } }
     var memUsedMB: Double { sparks.reduce(0) { $0 + $1.memUsedMB } }
     var memTotalMB: Double { sparks.reduce(0) { $0 + $1.memTotalMB } }
-    var watts: Double { energy?.currentWatts ?? sparks.reduce(0) { $0 + ($1.systemPower ?? $1.power) } }
+    /// sparkDash's energy feed covers its own Sparks only, so llama-swap hosts are added on top.
+    var watts: Double {
+        let hostWatts = sparks.filter { $0.kind == "host" }.reduce(0) { $0 + ($1.systemPower ?? $1.power) }
+        guard let fed = energy?.currentWatts else { return sparks.reduce(0) { $0 + ($1.systemPower ?? $1.power) } }
+        return fed + hostWatts
+    }
 
     var alerts: [FleetAlert] {
         var out: [FleetAlert] = []

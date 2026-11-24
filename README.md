@@ -35,6 +35,17 @@ defaults write dev.pulsebar.PulseBar.sparkdash SparkDash.Token <key>
 A llama-swap server bound to loopback works through the same SSH-tunnel mechanism: set
 `SparkDash.SSHHost` (e.g. `sirius`) and `SparkDash.URL` to `http://127.0.0.1:9999`.
 
+On Apple Silicon, llama-swap reports 0 for GPU temperature and power. Run
+[macmon](https://github.com/vladkens/macmon) on the host and publish it at `<llama-swap URL>/macmon`;
+PulseBar then reads `/macmon/json` for GPU and CPU temperature, GPU, CPU and system power, GPU
+utilisation, GPU memory in use, unified memory and uptime. With `tailscale serve`:
+
+```bash
+brew install macmon
+macmon serve --host 127.0.0.1 -p 9101 &   # or a LaunchAgent with KeepAlive
+tailscale serve --bg --set-path /macmon http://127.0.0.1:9101
+```
+
 <p align="center"><img src="docs/assets/sparkdash-panel.png" alt="sparkDash fleet panel with demo data" width="400"></p>
 
 Connection (gear button in the panel, or `defaults write dev.pulsebar.PulseBar.sparkdash <key> <value>`):

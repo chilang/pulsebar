@@ -18,9 +18,11 @@ struct LlamaSwapClient: Sendable {
         async let stats: Data? = try? get("api/metrics/stats")
         async let activity: Data? = try? get("api/metrics/activity")
         async let prometheus: Data? = try? get("metrics")
-        let summary = try LlamaSwapDecoding.summary(
+        async let macmon: Data? = try? get("macmon/json")
+        var summary = try LlamaSwapDecoding.summary(
             performance: await performance, stats: await stats, activity: await activity,
             prometheus: await prometheus, host: baseURL.host ?? "llama-swap")
+        if let data = await macmon { LlamaSwapDecoding.applyMacmon(data, to: &summary) }
         return FleetSnapshot(sparks: [summary], energy: nil)
     }
 
@@ -168,6 +170,28 @@ enum LlamaSwapDecoding {
         r.prefillTps = prefillTps(entries)
         r.totalOutputTokens = totals?.outputTokens ?? 0
         return r
+    }
+
+    /// Overlays Apple Silicon sensors from `macmon serve` (`GET /json`), published next to llama-swap
+    /// at `<base>/macmon/json`. llama-swap reports 0 for GPU temperature and power on macOS, and its
+    /// VRAM figure misses Metal allocations, so macmon wins wherever it has a value.
+    static func applyMacmon(_ data: Data, to r: inout SparkSummary) {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        let temp = root["temp"] as? [String: Any] ?? [:]
+        if num(temp["gpu_temp_avg"]) > 0 { r.temperature = num(temp["gpu_temp_avg"]) }
+        if num(temp["cpu_temp_avg"]) > 0 { r.cpuTemp = num(temp["cpu_temp_avg"]) }
+        if root["gpu_power"] != nil { r.power = num(root["gpu_power"]) }
+        if root["cpu_power"] != nil { r.cpuPower = num(root["cpu_power"]) }
+        if root["sys_power"] != nil { r.systemPower = num(root["sys_power"]) }
+        if let usage = root["gpu_usage"] as? [Any], usage.count == 2 { r.usage = num(usage[1]) * 100 }
+        if root["gpu_mem_in_use"] != nil { r.vramUsedMB = num(root["gpu_mem_in_use"]) / 1_048_576 }
+        if root["uptime"] != nil { r.uptime = num(root["uptime"]) }
+        if let memory = root["memory"] as? [String: Any], num(memory["ram_total"]) > 0 {
+            r.memUsedMB = num(memory["ram_usage"]) / 1_048_576
+            r.memTotalMB = num(memory["ram_total"]) / 1_048_576
+            let fraction = r.memUsedMB / r.memTotalMB
+            r.oomRisk = fraction >= 0.9 ? "high" : fraction >= 0.75 ? "medium" : "low"
+        }
     }
 
     /// `sirius.example.ts.net` → `sirius`; IP addresses and single labels stay as they are.

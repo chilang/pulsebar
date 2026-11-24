@@ -27,6 +27,11 @@ enum FleetFormat {
         guard let value else { return "—" }
         return value < 1 ? "\(Int((value * 1000).rounded()))ms" : "\(number(value, value < 10 ? 2 : 1))s"
     }
+    /// "7.7 / 120 W" when the host reports a limit, else just "138.3 W" (Apple Silicon has none).
+    static func watts(_ value: Double, limit: Double) -> String {
+        limit > 0 ? "\(number(value)) / \(Int(limit)) W" : "\(number(value)) W"
+    }
+
     static func uptime(_ seconds: Double?) -> String {
         guard let seconds else { return "—" }
         let s = Int(seconds)
@@ -408,7 +413,7 @@ private struct SparkCard: View {
                     Pair(label: "Usage", value: "\(Int(spark.usage.rounded()))%", warn: spark.usage >= 90)
                     Pair(label: "Temperature", value: "\(Int(spark.temperature.rounded()))°C", warn: spark.temperature >= 85)
                     Pair(label: "VRAM", value: "\(FleetFormat.gb(spark.vramUsedMB)) / \(FleetFormat.gb(spark.vramTotalMB)) GB")
-                    Pair(label: "Power", value: "\(FleetFormat.number(spark.power)) / \(Int(spark.powerLimit)) W")
+                    Pair(label: "Power", value: FleetFormat.watts(spark.power, limit: spark.powerLimit))
                 }
                 if spark.llmMonitoring {
                     Sparkline(values: history).frame(width: 110, height: 56)
@@ -447,7 +452,7 @@ private struct SparkCard: View {
                 Pair(label: "Network", value: spark.netPrimary)
             }
             GridRow {
-                Pair(label: "CPU power", value: "\(Int(spark.cpuPower.rounded())) / \(Int(spark.cpuTdp)) W")
+                Pair(label: "CPU power", value: FleetFormat.watts(spark.cpuPower.rounded(), limit: spark.cpuTdp))
                 Pair(label: "Link", value: spark.netLinkMbps.map { "\(Int($0)) Mbps" } ?? "—")
             }
             GridRow {
