@@ -2,9 +2,73 @@ import AppKit
 import Foundation
 
 enum FleetSettings {
+    /// Array of `{kind, url, sshHost, token}` dictionaries; supersedes the single-source keys below.
+    static let sourcesKey = "Fleet.Sources"
     static let urlKey = "SparkDash.URL"
     static let sshHostKey = "SparkDash.SSHHost"
+    static let sourceKey = "SparkDash.Source"
+    static let tokenKey = "SparkDash.Token"
     static let defaultURL = "http://127.0.0.1:5555"
+    static let defaultSource = "sparkdash"
+
+    /// Reads `Fleet.Sources`, falling back to the legacy single-source keys so existing installs keep working.
+    static func load(from defaults: UserDefaults) -> [FleetSource] {
+        if let list = defaults.array(forKey: sourcesKey) as? [[String: String]], !list.isEmpty {
+            return list.map(FleetSource.init(plist:))
+        }
+        return [
+            FleetSource(
+                kind: defaults.string(forKey: sourceKey) ?? defaultSource,
+                url: defaults.string(forKey: urlKey) ?? defaultURL,
+                sshHost: defaults.string(forKey: sshHostKey) ?? "",
+                token: defaults.string(forKey: tokenKey) ?? "")
+        ]
+    }
+
+    static func save(_ sources: [FleetSource], to defaults: UserDefaults) {
+        defaults.set(sources.map(\.plist), forKey: sourcesKey)
+    }
+}
+
+/// One endpoint the fleet panel polls: a sparkDash server (any number of Sparks) or a llama-swap host.
+struct FleetSource: Equatable, Identifiable, Sendable {
+    var id = UUID()
+    var kind = FleetSettings.defaultSource
+    var url = FleetSettings.defaultURL
+    var sshHost = ""
+    var token = ""
+
+    var isLlamaSwap: Bool { kind.trimmingCharacters(in: .whitespaces) == "llamaswap" }
+    var trimmedHost: String { sshHost.trimmingCharacters(in: .whitespaces) }
+    var trimmedToken: String? {
+        let value = token.trimmingCharacters(in: .whitespaces)
+        return value.isEmpty ? nil : value
+    }
+    var configuredURL: URL? {
+        guard let url = URL(string: url.trimmingCharacters(in: .whitespaces)), url.scheme != nil else { return nil }
+        return url
+    }
+    var serviceName: String { isLlamaSwap ? "llama-swap" : "sparkDash" }
+    /// Short name for an unreachable-host card: the SSH host if tunnelled, else the URL host.
+    var label: String {
+        if !trimmedHost.isEmpty { return trimmedHost }
+        return LlamaSwapDecoding.shortHost(configuredURL?.host ?? url)
+    }
+
+    init(kind: String = FleetSettings.defaultSource, url: String = FleetSettings.defaultURL, sshHost: String = "", token: String = "") {
+        self.kind = kind
+        self.url = url
+        self.sshHost = sshHost
+        self.token = token
+    }
+
+    init(plist: [String: String]) {
+        self.init(
+            kind: plist["kind"] ?? FleetSettings.defaultSource, url: plist["url"] ?? FleetSettings.defaultURL,
+            sshHost: plist["sshHost"] ?? "", token: plist["token"] ?? "")
+    }
+
+    var plist: [String: String] { ["kind": kind, "url": url, "sshHost": sshHost, "token": token] }
 }
 
 /// Keeps `ssh -N -L <local>:127.0.0.1:<remote> <host>` running for a sparkDash bound to loopback on the head.
@@ -82,25 +146,32 @@ final class FleetViewModel: ObservableObject {
     @Published private(set) var errorText = "Connecting…"
     @Published private(set) var lastUpdate: Date?
     @Published private(set) var history: [String: [Double]] = [:]
-    @Published var urlString: String { didSet { settingsChanged(old: oldValue, new: urlString, key: FleetSettings.urlKey) } }
-    @Published var sshHost: String { didSet { settingsChanged(old: oldValue, new: sshHost, key: FleetSettings.sshHostKey) } }
+    @Published var sources: [FleetSource] {
+        didSet {
+            guard sources != oldValue else { return }
+            FleetSettings.save(sources, to: defaults)
+            restart()
+        }
+    }
 
     static let historyLimit = 600  // 30 minutes at 3 s
-    private let tunnel = SparkDashTunnel()
+    /// One tunnel per source, keyed by source id; only tunnels this object started are ever stopped.
+    private var tunnels: [UUID: SparkDashTunnel] = [:]
     private var pollTask: Task<Void, Never>?
     private var wakeTask: Task<Void, Never>?
     private var terminateObserver: NSObjectProtocol?
+    private let defaults: UserDefaults
     private let demo: Bool
 
     init(defaults: UserDefaults = .standard, demo: Bool = false) {
+        self.defaults = defaults
         self.demo = demo
-        urlString = defaults.string(forKey: FleetSettings.urlKey) ?? FleetSettings.defaultURL
-        sshHost = defaults.string(forKey: FleetSettings.sshHostKey) ?? ""
+        sources = FleetSettings.load(from: defaults)
         start()
         terminateObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.tunnel.stop() }
+            MainActor.assumeIsolated { self?.stopTunnels() }
         }
         wakeTask = Task { [weak self] in
             for await _ in NSWorkspace.shared.notificationCenter.notifications(named: NSWorkspace.didWakeNotification) {
@@ -114,11 +185,11 @@ final class FleetViewModel: ObservableObject {
         wakeTask?.cancel()
     }
 
-    /// The URL the panel links to and the client polls (the tunnel end when SSH is configured).
-    var effectiveURL: URL? {
-        guard let configured = URL(string: urlString.trimmingCharacters(in: .whitespaces)), configured.scheme != nil else { return nil }
-        guard !trimmedHost.isEmpty else { return configured }
-        guard let port = tunnel.localPort else { return nil }
+    /// The URL a source is read through: the tunnel end when it has an SSH host, else its configured URL.
+    func effectiveURL(for source: FleetSource) -> URL? {
+        guard let configured = source.configuredURL else { return nil }
+        guard !source.trimmedHost.isEmpty else { return configured }
+        guard let port = tunnels[source.id]?.localPort else { return nil }
         var parts = URLComponents()
         parts.scheme = "http"
         parts.host = "127.0.0.1"
@@ -126,26 +197,40 @@ final class FleetViewModel: ObservableObject {
         return parts.url
     }
 
+    /// "DGX SPARKS" while every source is sparkDash, "FLEET" once other hosts are mixed in.
+    var title: String { sources.allSatisfy { !$0.isLlamaSwap } ? "DGX SPARKS" : "FLEET" }
+
     var menuBarTitle: String {
         guard reachable, snapshot.totalCount > 0 else { return "⚡ —" }
         let rate = snapshot.generationTps > 0 ? "\(Int(snapshot.generationTps.rounded())) t/s" : "\(Int(snapshot.busiest.rounded()))%"
-        return "\(snapshot.onlineCount)/\(snapshot.totalCount)  \(rate)  \(Int(snapshot.hottest.rounded()))°"
+        // Apple Silicon hosts report no GPU temperature; omit the segment instead of showing 0°.
+        let temp = snapshot.hottest > 0 ? "  \(Int(snapshot.hottest.rounded()))°" : ""
+        return "\(snapshot.onlineCount)/\(snapshot.totalCount)  \(rate)\(temp)"
     }
 
     var alerting: Bool { !reachable || !snapshot.alerts.isEmpty }
 
     func restart() {
-        tunnel.stop()
+        stopTunnels()
         start()
     }
 
+    func addSource() {
+        sources.append(FleetSource(kind: "llamaswap", url: ""))
+    }
+
+    func removeSource(id: UUID) {
+        guard sources.count > 1 else { return }
+        sources.removeAll { $0.id == id }
+    }
+
     func openDashboard() {
-        if let url = effectiveURL { NSWorkspace.shared.open(url) }
+        if let first = sources.first, let url = effectiveURL(for: first) { NSWorkspace.shared.open(url) }
     }
 
     func quit(stopApp: Bool = true) {
         pollTask?.cancel()
-        tunnel.stop()
+        stopTunnels()
         if stopApp { NSApplication.shared.terminate(nil) }
     }
 
@@ -162,12 +247,37 @@ final class FleetViewModel: ObservableObject {
         }
     }
 
-    private var trimmedHost: String { sshHost.trimmingCharacters(in: .whitespaces) }
+    /// Joins per-source results in source order. A failed source becomes one offline card so the
+    /// header count and alerts show it; the panel only goes fully offline when every source fails.
+    static func merge(_ results: [(source: FleetSource, outcome: Result<FleetSnapshot, SourceFailure>)]) -> (
+        snapshot: FleetSnapshot, errors: [String]
+    ) {
+        var merged = FleetSnapshot()
+        var errors: [String] = []
+        for (source, outcome) in results {
+            switch outcome {
+            case .success(let part):
+                merged.sparks += part.sparks
+                if merged.energy == nil { merged.energy = part.energy }
+            case .failure(let failure):
+                errors.append("\(source.label): \(failure.message)")
+                var card = SparkSummary()
+                card.id = "source-\(source.label)"
+                card.name = source.label
+                card.kind = source.isLlamaSwap ? "host" : "spark"
+                card.online = false
+                card.llmMonitoring = false
+                merged.sparks.append(card)
+            }
+        }
+        return (merged, errors)
+    }
 
-    private func settingsChanged(old: String, new: String, key: String) {
-        guard old != new else { return }
-        UserDefaults.standard.set(new, forKey: key)
-        restart()
+    struct SourceFailure: Error, Sendable { var message: String }
+
+    private func stopTunnels() {
+        for tunnel in tunnels.values { tunnel.stop() }
+        tunnels.removeAll()
     }
 
     private func start() {
@@ -190,25 +300,56 @@ final class FleetViewModel: ObservableObject {
     }
 
     private func pollOnce() async {
-        if !trimmedHost.isEmpty, !tunnel.isRunning {
-            tunnel.ensure(host: trimmedHost, remotePort: URL(string: urlString)?.port ?? 5555)
-            try? await Task.sleep(for: .seconds(2))
+        var startedTunnel = false
+        for source in sources where !source.trimmedHost.isEmpty {
+            let tunnel = tunnels[source.id] ?? SparkDashTunnel()
+            tunnels[source.id] = tunnel
+            if !tunnel.isRunning {
+                tunnel.ensure(host: source.trimmedHost, remotePort: source.configuredURL?.port ?? 5555)
+                startedTunnel = true
+            }
         }
-        guard let url = effectiveURL else {
+        if startedTunnel { try? await Task.sleep(for: .seconds(2)) }
+
+        let jobs = sources.enumerated().map { index, source in
+            (index: index, source: source, url: effectiveURL(for: source), tunnelError: tunnels[source.id]?.lastError)
+        }
+        var outcomes = [Result<FleetSnapshot, SourceFailure>?](repeating: nil, count: jobs.count)
+        await withTaskGroup(of: (Int, Result<FleetSnapshot, SourceFailure>).self) { group in
+            for job in jobs {
+                group.addTask { (job.index, await Self.fetch(job.source, url: job.url, tunnelError: job.tunnelError)) }
+            }
+            for await (index, outcome) in group { outcomes[index] = outcome }
+        }
+        guard !Task.isCancelled else { return }
+
+        let results = zip(sources, outcomes).map { (source: $0, outcome: $1 ?? .failure(SourceFailure(message: "no result"))) }
+        let (merged, errors) = Self.merge(results)
+        if errors.count == results.count {
             reachable = false
-            errorText = tunnel.lastError.map { "SSH tunnel: \($0)" } ?? SparkDashError.invalidURL.message
-            return
+            errorText = errors.joined(separator: "\n")
+        } else {
+            apply(merged, at: .now)
+        }
+    }
+
+    private nonisolated static func fetch(
+        _ source: FleetSource, url: URL?, tunnelError: String?
+    ) async -> Result<FleetSnapshot, SourceFailure> {
+        guard let url else {
+            return .failure(SourceFailure(message: tunnelError.map { "SSH tunnel: \($0)" } ?? SparkDashError.invalidURL.message))
         }
         do {
-            let next = try await SparkDashClient(baseURL: url).fetchFleet()
-            apply(next, at: .now)
-        } catch {
-            reachable = false
-            if let tunnelError = tunnel.lastError, !trimmedHost.isEmpty, !tunnel.isRunning {
-                errorText = "SSH tunnel: \(tunnelError)"
-            } else {
-                errorText = (error as? SparkDashError)?.message ?? "sparkDash unavailable"
+            if source.isLlamaSwap {
+                return .success(try await LlamaSwapClient(baseURL: url, token: source.trimmedToken).fetchFleet())
             }
+            return .success(try await SparkDashClient(baseURL: url, token: source.trimmedToken).fetchFleet())
+        } catch {
+            if let tunnelError, !source.trimmedHost.isEmpty { return .failure(SourceFailure(message: "SSH tunnel: \(tunnelError)")) }
+            let message =
+                (error as? SparkDashError)?.message.replacingOccurrences(of: "sparkDash", with: source.serviceName)
+                ?? "\(source.serviceName) unavailable"
+            return .failure(SourceFailure(message: message))
         }
     }
 }

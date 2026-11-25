@@ -99,13 +99,18 @@ struct FleetSnapshot: Sendable, Equatable {
     var totalCount: Int { sparks.count }
     var generationTps: Double { sparks.reduce(0) { $0 + $1.generationTps } }
     var prefillTps: Double { sparks.reduce(0) { $0 + $1.prefillTps } }
-    var hottest: Double { sparks.map(\.temperature).max() ?? 0 }
+    var hottest: Double { sparks.map(\.temperature).filter { $0 > 0 }.max() ?? 0 }
     var busiest: Double { sparks.map(\.usage).max() ?? 0 }
     var vramUsedMB: Double { sparks.reduce(0) { $0 + $1.vramUsedMB } }
     var vramTotalMB: Double { sparks.reduce(0) { $0 + $1.vramTotalMB } }
     var memUsedMB: Double { sparks.reduce(0) { $0 + $1.memUsedMB } }
     var memTotalMB: Double { sparks.reduce(0) { $0 + $1.memTotalMB } }
-    var watts: Double { energy?.currentWatts ?? sparks.reduce(0) { $0 + ($1.systemPower ?? $1.power) } }
+    /// sparkDash's energy feed covers its own Sparks only, so llama-swap hosts are added on top.
+    var watts: Double {
+        let hostWatts = sparks.filter { $0.kind == "host" }.reduce(0) { $0 + ($1.systemPower ?? $1.power) }
+        guard let fed = energy?.currentWatts else { return sparks.reduce(0) { $0 + ($1.systemPower ?? $1.power) } }
+        return fed + hostWatts
+    }
 
     var alerts: [FleetAlert] {
         var out: [FleetAlert] = []

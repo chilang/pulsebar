@@ -27,6 +27,11 @@ enum FleetFormat {
         guard let value else { return "—" }
         return value < 1 ? "\(Int((value * 1000).rounded()))ms" : "\(number(value, value < 10 ? 2 : 1))s"
     }
+    /// "7.7 / 120 W" when the host reports a limit, else just "138.3 W" (Apple Silicon has none).
+    static func watts(_ value: Double, limit: Double) -> String {
+        limit > 0 ? "\(number(value)) / \(Int(limit)) W" : "\(number(value)) W"
+    }
+
     static func uptime(_ seconds: Double?) -> String {
         guard let seconds else { return "—" }
         let s = Int(seconds)
@@ -122,7 +127,7 @@ struct FleetPanelView: View {
 
     private var header: some View {
         HStack {
-            Text("DGX SPARKS").font(mono(15, .bold)).tracking(1.2).foregroundStyle(Palette.foreground)
+            Text(model.title).font(mono(15, .bold)).tracking(1.2).foregroundStyle(Palette.foreground)
             Spacer()
             Text(model.reachable ? "\(model.snapshot.onlineCount)/\(model.snapshot.totalCount) ONLINE" : "OFFLINE")
                 .font(mono(12, .bold))
@@ -198,12 +203,44 @@ struct FleetPanelView: View {
 
     private var settings: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("SPARKDASH").font(mono(11, .bold)).tracking(1).foregroundStyle(Palette.dim)
-            LabeledField(label: "URL", text: $model.urlString, prompt: FleetSettings.defaultURL)
-            LabeledField(label: "SSH host", text: $model.sshHost, prompt: "optional, e.g. spark-head")
+            HStack {
+                Text("SOURCES").font(mono(11, .bold)).tracking(1).foregroundStyle(Palette.dim)
+                Spacer()
+                Button {
+                    model.addSource()
+                } label: {
+                    Label("Add", systemImage: "plus")
+                }
+                .buttonStyle(.plain).font(mono(10, .bold)).foregroundStyle(Palette.dim)
+            }
+            ForEach($model.sources) { $source in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Picker("Source", selection: $source.kind) {
+                            Text("sparkDash").tag("sparkdash")
+                            Text("llama-swap").tag("llamaswap")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        if model.sources.count > 1 {
+                            Button {
+                                model.removeSource(id: source.id)
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.plain).foregroundStyle(Palette.dim).help("Remove source")
+                        }
+                    }
+                    LabeledField(label: "URL", text: $source.url, prompt: FleetSettings.defaultURL)
+                    LabeledField(label: "SSH host", text: $source.sshHost, prompt: "optional, e.g. spark-head")
+                    LabeledField(label: "Token", text: $source.token, prompt: "optional API key (Bearer)")
+                }
+                .padding(.bottom, 4)
+            }
             Text(
-                "With an SSH host, PulseBar runs `ssh -N -L <free port>:127.0.0.1:<URL port>` to that host "
-                    + "and reads sparkDash through it, for a dashboard bound to loopback on the Spark."
+                "sparkDash mode reads the sparkDash REST API; llama-swap mode reads a llama-swap server's "
+                    + "`/api/performance`, `/api/metrics/*` and `/metrics` endpoints. With an SSH host, PulseBar runs "
+                    + "`ssh -N -L <free port>:127.0.0.1:<URL port>` to that host and reads through it."
             )
             .font(.system(size: 10)).foregroundStyle(Palette.faint)
         }
@@ -214,12 +251,12 @@ struct FleetPanelView: View {
 
     private var footer: some View {
         HStack(spacing: 14) {
-            Button("Open sparkDash") { model.openDashboard() }
+            Button("Open dashboard") { model.openDashboard() }
             Button {
                 showSettings.toggle()
             } label: {
                 Image(systemName: "gearshape")
-            }.help("sparkDash connection")
+            }.help("Connection")
             Spacer()
             if let last = model.lastUpdate, model.reachable {
                 Text(last, style: .relative).font(mono(10)).foregroundStyle(Palette.faint)
@@ -376,7 +413,7 @@ private struct SparkCard: View {
                     Pair(label: "Usage", value: "\(Int(spark.usage.rounded()))%", warn: spark.usage >= 90)
                     Pair(label: "Temperature", value: "\(Int(spark.temperature.rounded()))°C", warn: spark.temperature >= 85)
                     Pair(label: "VRAM", value: "\(FleetFormat.gb(spark.vramUsedMB)) / \(FleetFormat.gb(spark.vramTotalMB)) GB")
-                    Pair(label: "Power", value: "\(FleetFormat.number(spark.power)) / \(Int(spark.powerLimit)) W")
+                    Pair(label: "Power", value: FleetFormat.watts(spark.power, limit: spark.powerLimit))
                 }
                 if spark.llmMonitoring {
                     Sparkline(values: history).frame(width: 110, height: 56)
@@ -415,7 +452,7 @@ private struct SparkCard: View {
                 Pair(label: "Network", value: spark.netPrimary)
             }
             GridRow {
-                Pair(label: "CPU power", value: "\(Int(spark.cpuPower.rounded())) / \(Int(spark.cpuTdp)) W")
+                Pair(label: "CPU power", value: FleetFormat.watts(spark.cpuPower.rounded(), limit: spark.cpuTdp))
                 Pair(label: "Link", value: spark.netLinkMbps.map { "\(Int($0)) Mbps" } ?? "—")
             }
             GridRow {

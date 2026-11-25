@@ -17,6 +17,35 @@ This fork reads [sparkDash](https://github.com/MiaAI-Lab/sparkDash) instead of t
   detail (KV cache, slots, requests, TTFT/ITL p95, prefix-cache hit rate, MTP acceptance).
 - It polls `/api/sparks`, `/api/sparks/:id/metrics` and `/api/fleet-energy` every 3 s.
 
+### Monitoring a llama-swap host (e.g. Sirius)
+
+The same menu bar item can also watch a [llama-swap](https://github.com/mostlygeek/llama-swap) server
+(such as a headless Mac Studio) instead of sparkDash. It reads `/api/performance` (GPU util, VRAM,
+power, chip name), `/api/metrics/stats` (token totals), `/api/metrics/activity` (per-request
+tokens/sec, averaged over the last 10 requests) and `/metrics` (CPU, system memory), and shows the
+host as a one-card fleet. Pick the source with the segmented control in the gear panel, or:
+
+```sh
+defaults write dev.pulsebar.PulseBar.sparkdash SparkDash.Source llamaswap
+defaults write dev.pulsebar.PulseBar.sparkdash SparkDash.URL https://sirius.example.ts.net
+# optional API key, sent as a Bearer token:
+defaults write dev.pulsebar.PulseBar.sparkdash SparkDash.Token <key>
+```
+
+A llama-swap server bound to loopback works through the same SSH-tunnel mechanism: set
+`SparkDash.SSHHost` (e.g. `sirius`) and `SparkDash.URL` to `http://127.0.0.1:9999`.
+
+On Apple Silicon, llama-swap reports 0 for GPU temperature and power. Run
+[macmon](https://github.com/vladkens/macmon) on the host and publish it at `<llama-swap URL>/macmon`;
+PulseBar then reads `/macmon/json` for GPU and CPU temperature, GPU, CPU and system power, GPU
+utilisation, GPU memory in use, unified memory and uptime. With `tailscale serve`:
+
+```bash
+brew install macmon
+macmon serve --host 127.0.0.1 -p 9101 &   # or a LaunchAgent with KeepAlive
+tailscale serve --bg --set-path /macmon http://127.0.0.1:9101
+```
+
 <p align="center"><img src="docs/assets/sparkdash-panel.png" alt="sparkDash fleet panel with demo data" width="400"></p>
 
 Connection (gear button in the panel, or `defaults write dev.pulsebar.PulseBar.sparkdash <key> <value>`):
